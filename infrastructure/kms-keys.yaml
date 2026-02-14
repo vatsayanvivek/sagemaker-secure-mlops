@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: KMS keys for MLOps encryption
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  MLOpsKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Customer-managed key for MLOps data encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: AllowSageMaker
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - kms:CreateGrant
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:ViaService:
+                  - !Sub sagemaker.${AWS::Region}.amazonaws.com
+                  - !Sub s3.${AWS::Region}.amazonaws.com
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  MLOpsKMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/mlops-${Environment}
+      TargetKeyId: !Ref MLOpsKMSKey
+
+Outputs:
+  KMSKeyArn:
+    Value: !GetAtt MLOpsKMSKey.Arn
+    Export:
+      Name: !Sub mlops-${Environment}-kms-arn
+  KMSKeyId:
+    Value: !Ref MLOpsKMSKey
+    Export:
+      Name: !Sub mlops-${Environment}-kms-id

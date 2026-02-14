@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Security groups and VPC endpoint policies
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  SageMakerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for SageMaker workloads
+      VpcId:
+        Fn::ImportValue: !Sub mlops-${Environment}-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref SageMakerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationPrefixListId: !Ref S3PrefixListId
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationSecurityGroupId:
+            Fn::ImportValue: !Sub mlops-${Environment}-endpoint-sg
+      Tags:
+        - Key: Name
+          Value: !Sub mlops-${Environment}-sagemaker-sg
+
+  S3PrefixListId:
+    Type: Custom::PrefixListLookup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ServiceToken: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:lookup-prefix-list
+
+Outputs:
+  SageMakerSecurityGroupId:
+    Value: !Ref SageMakerSecurityGroup
+    Export:
+      Name: !Sub mlops-${Environment}-sagemaker-sg

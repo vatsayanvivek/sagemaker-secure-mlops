@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Encrypted S3 buckets for MLOps data and artifacts
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  KMSKeyArn:
+    Type: String
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub mlops-${Environment}-data-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ModelArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub mlops-${Environment}-models-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DataBucket.Arn
+              - !Sub ${DataBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  ModelBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ModelArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ModelArtifactsBucket.Arn
+              - !Sub ${ModelArtifactsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+Outputs:
+  DataBucketName:
+    Value: !Ref DataBucket
+    Export:
+      Name: !Sub mlops-${Environment}-data-bucket
+  ModelBucketName:
+    Value: !Ref ModelArtifactsBucket
+    Export:
+      Name: !Sub mlops-${Environment}-model-bucket

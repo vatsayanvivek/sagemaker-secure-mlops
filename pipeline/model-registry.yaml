@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SageMaker Model Registry with approval workflow
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  ModelPackageGroup:
+    Type: AWS::SageMaker::ModelPackageGroup
+    Properties:
+      ModelPackageGroupName: !Sub mlops-${Environment}-model-group
+      ModelPackageGroupDescription: Production model registry with approval gates
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ApprovalTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub mlops-${Environment}-model-approval
+      KmsMasterKeyId:
+        Fn::ImportValue: !Sub mlops-${Environment}-kms-id
+
+  ModelApprovalRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub mlops-${Environment}-model-pending-approval
+      Description: Notify when a model is pending approval
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type:
+          - SageMaker Model Package State Change
+        detail:
+          ModelApprovalStatus:
+            - PendingManualApproval
+          ModelPackageGroupName:
+            - !Sub mlops-${Environment}-model-group
+      Targets:
+        - Arn: !Ref ApprovalTopic
+          Id: notify-approval
+
+  ApprovedModelRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub mlops-${Environment}-model-approved
+      Description: Trigger deployment when model is approved
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type:
+          - SageMaker Model Package State Change
+        detail:
+          ModelApprovalStatus:
+            - Approved
+          ModelPackageGroupName:
+            - !Sub mlops-${Environment}-model-group
+      Targets:
+        - Arn: !Ref ApprovalTopic
+          Id: notify-deployment
+
+  TopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref ApprovalTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref ApprovalTopic
+
+Outputs:
+  ModelPackageGroupName:
+    Value: !Ref ModelPackageGroup
+    Export:
+      Name: !Sub mlops-${Environment}-model-group
+  ApprovalTopicArn:
+    Value: !Ref ApprovalTopic

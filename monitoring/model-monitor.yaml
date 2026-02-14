@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Model monitoring for data quality and model quality
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  DataQualityMonitor:
+    Type: AWS::SageMaker::MonitoringSchedule
+    Properties:
+      MonitoringScheduleName: !Sub mlops-${Environment}-data-quality
+      MonitoringScheduleConfig:
+        MonitoringJobDefinition:
+          MonitoringAppSpecification:
+            ImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/sagemaker-model-monitor-analyzer
+          MonitoringInputs:
+            - EndpointInput:
+                EndpointName: !Sub mlops-${Environment}-endpoint
+                LocalPath: /opt/ml/processing/input
+          MonitoringOutputConfig:
+            MonitoringOutputs:
+              - S3Output:
+                  S3Uri: !Sub s3://mlops-${Environment}-data-${AWS::AccountId}/monitoring/data-quality/
+                  LocalPath: /opt/ml/processing/output
+                  S3UploadMode: EndOfJob
+            KmsKeyId:
+              Fn::ImportValue: !Sub mlops-${Environment}-kms-id
+          MonitoringResources:
+            ClusterConfig:
+              InstanceCount: 1
+              InstanceType: ml.m5.large
+              VolumeSizeInGB: 20
+              VolumeKmsKeyId:
+                Fn::ImportValue: !Sub mlops-${Environment}-kms-id
+          RoleArn:
+            Fn::ImportValue: !Sub mlops-${Environment}-execution-role
+          NetworkConfig:
+            EnableNetworkIsolation: false
+            VpcConfig:
+              SecurityGroupIds:
+                - Fn::ImportValue: !Sub mlops-${Environment}-sagemaker-sg
+              Subnets:
+                Fn::Split:
+                  - ','
+                  - Fn::ImportValue: !Sub mlops-${Environment}-private-subnets
+        ScheduleConfig:
+          ScheduleExpression: cron(0 */6 * * ? *)
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment

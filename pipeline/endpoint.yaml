@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SageMaker real-time endpoint with API Gateway and WAF
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  EndpointInstanceType:
+    Type: String
+    Default: ml.m5.xlarge
+  MinInstanceCount:
+    Type: Number
+    Default: 1
+  MaxInstanceCount:
+    Type: Number
+    Default: 4
+
+Resources:
+  EndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub mlops-${Environment}-endpoint-config
+      KmsKeyId:
+        Fn::ImportValue: !Sub mlops-${Environment}-kms-id
+      ProductionVariants:
+        - VariantName: primary
+          ModelName: !Sub mlops-${Environment}-model
+          InstanceType: !Ref EndpointInstanceType
+          InitialInstanceCount: !Ref MinInstanceCount
+          InitialVariantWeight: 1.0
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  Endpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub mlops-${Environment}-endpoint
+      EndpointConfigName: !Ref EndpointConfig
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: !Ref MaxInstanceCount
+      MinCapacity: !Ref MinInstanceCount
+      ResourceId: !Sub endpoint/mlops-${Environment}-endpoint/variant/primary
+      ScalableDimension: sagemaker:variant:DesiredInstanceCount
+      ServiceNamespace: sagemaker
+
+  ScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub mlops-${Environment}-target-tracking
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: SageMakerVariantInvocationsPerInstance
+
+  InferenceAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub mlops-${Environment}-inference-api
+      Description: API Gateway for SageMaker inference endpoint
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  InferenceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref InferenceAPI
+      ParentId: !GetAtt InferenceAPI.RootResourceId
+      PathPart: predict
+
+  InferenceMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref InferenceAPI
+      ResourceId: !Ref InferenceResource
+      HttpMethod: POST
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:runtime.sagemaker:path/endpoints/mlops-${Environment}-endpoint/invocations
+        Credentials: !GetAtt APIGatewayRole.Arn
+        PassthroughBehavior: WHEN_NO_MATCH
+        IntegrationResponses:
+          - StatusCode: '200'
+      MethodResponses:
+        - StatusCode: '200'
+
+  APIGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeSageMaker
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sagemaker:InvokeEndpoint
+                Resource: !Sub arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/mlops-${Environment}-endpoint
+
+  WAFWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub mlops-${Environment}-waf
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      Rules:
+        - Name: RateLimit
+          Priority: 1
+          Statement:
+            RateBasedStatement:
+              Limit: 1000
+              AggregateKeyType: IP
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitRule
+        - Name: AWSManagedCommonRules
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub mlops-${Environment}-waf
+
+Outputs:
+  EndpointName:
+    Value: !Ref Endpoint
+  APIEndpoint:
+    Value: !Sub https://${InferenceAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/predict

@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudWatch alarms for MLOps monitoring
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  AlertEmail:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub mlops-${Environment}-alerts
+      KmsMasterKeyId:
+        Fn::ImportValue: !Sub mlops-${Environment}-kms-id
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  EndpointLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub mlops-${Environment}-endpoint-latency
+      AlarmDescription: High latency on inference endpoint
+      MetricName: ModelLatency
+      Namespace: AWS/SageMaker
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub mlops-${Environment}-endpoint
+        - Name: VariantName
+          Value: primary
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 5000000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+
+  Endpoint5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub mlops-${Environment}-endpoint-5xx
+      AlarmDescription: Endpoint returning 5xx errors
+      MetricName: Invocation5XXErrors
+      Namespace: AWS/SageMaker
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub mlops-${Environment}-endpoint
+        - Name: VariantName
+          Value: primary
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+
+  EndpointInvocationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub mlops-${Environment}-low-invocations
+      AlarmDescription: Unusually low invocation count may indicate issues
+      MetricName: Invocations
+      Namespace: AWS/SageMaker
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub mlops-${Environment}-endpoint
+        - Name: VariantName
+          Value: primary
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+Outputs:
+  AlertTopicArn:
+    Value: !Ref AlertTopic

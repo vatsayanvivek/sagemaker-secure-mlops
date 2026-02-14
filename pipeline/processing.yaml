@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SageMaker processing job for data preprocessing
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  ProcessingInstanceType:
+    Type: String
+    Default: ml.m5.xlarge
+  ProcessingInstanceCount:
+    Type: Number
+    Default: 1
+
+Resources:
+  ProcessingJob:
+    Type: AWS::SageMaker::Pipeline
+    Properties:
+      PipelineName: !Sub mlops-${Environment}-preprocessing
+      PipelineDefinition:
+        PipelineDefinitionBody: !Sub |
+          {
+            "Version": "2020-12-01",
+            "Steps": [
+              {
+                "Name": "DataPreprocessing",
+                "Type": "Processing",
+                "Arguments": {
+                  "ProcessingResources": {
+                    "ClusterConfig": {
+                      "InstanceCount": ${ProcessingInstanceCount},
+                      "InstanceType": "${ProcessingInstanceType}",
+                      "VolumeSizeInGB": 50,
+                      "VolumeKmsKeyId": {"Fn::ImportValue": "mlops-${Environment}-kms-id"}
+                    }
+                  },
+                  "AppSpecification": {
+                    "ImageUri": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/mlops-preprocessing:latest",
+                    "ContainerEntrypoint": ["python3", "/opt/ml/processing/code/preprocessing.py"]
+                  },
+                  "ProcessingInputs": [
+                    {
+                      "InputName": "raw-data",
+                      "S3Input": {
+                        "S3Uri": "s3://mlops-${Environment}-data-${AWS::AccountId}/raw/",
+                        "LocalPath": "/opt/ml/processing/input",
+                        "S3DataType": "S3Prefix"
+                      }
+                    }
+                  ],
+                  "ProcessingOutputConfig": {
+                    "Outputs": [
+                      {
+                        "OutputName": "processed-data",
+                        "S3Output": {
+                          "S3Uri": "s3://mlops-${Environment}-data-${AWS::AccountId}/processed/",
+                          "LocalPath": "/opt/ml/processing/output",
+                          "S3UploadMode": "EndOfJob"
+                        }
+                      }
+                    ],
+                    "KmsKeyId": {"Fn::ImportValue": "mlops-${Environment}-kms-id"}
+                  },
+                  "NetworkConfig": {
+                    "EnableNetworkIsolation": false,
+                    "VpcConfig": {
+                      "SecurityGroupIds": [{"Fn::ImportValue": "mlops-${Environment}-sagemaker-sg"}],
+                      "Subnets": {"Fn::Split": [",", {"Fn::ImportValue": "mlops-${Environment}-private-subnets"}]}
+                    }
+                  },
+                  "RoleArn": {"Fn::ImportValue": "mlops-${Environment}-execution-role"}
+                }
+              }
+            ]
+          }
+      RoleArn:
+        Fn::ImportValue: !Sub mlops-${Environment}-pipeline-role
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment

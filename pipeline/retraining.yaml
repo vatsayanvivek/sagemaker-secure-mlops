@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Automated retraining triggered by EventBridge
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  RetrainingSchedule:
+    Type: String
+    Default: rate(7 days)
+
+Resources:
+  RetrainingStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub mlops-${Environment}-retraining
+      RoleArn: !GetAtt StepFunctionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "MLOps retraining pipeline",
+          "StartAt": "StartProcessingJob",
+          "States": {
+            "StartProcessingJob": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+              "Parameters": {
+                "ProcessingJobName.$": "States.Format('preprocess-{}', $$.Execution.Name)",
+                "ProcessingResources": {
+                  "ClusterConfig": {
+                    "InstanceCount": 1,
+                    "InstanceType": "ml.m5.xlarge",
+                    "VolumeSizeInGB": 50
+                  }
+                },
+                "AppSpecification": {
+                  "ImageUri": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/mlops-preprocessing:latest"
+                },
+                "RoleArn": {"Fn::ImportValue": "mlops-${Environment}-execution-role"}
+              },
+              "Next": "StartTrainingJob",
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "NotifyFailure"
+              }]
+            },
+            "StartTrainingJob": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+              "Parameters": {
+                "TrainingJobName.$": "States.Format('train-{}', $$.Execution.Name)",
+                "AlgorithmSpecification": {
+                  "TrainingImage": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/mlops-training:latest",
+                  "TrainingInputMode": "File"
+                },
+                "OutputDataConfig": {
+                  "S3OutputPath": "s3://mlops-${Environment}-models-${AWS::AccountId}/training-output/"
+                },
+                "ResourceConfig": {
+                  "InstanceType": "ml.m5.2xlarge",
+                  "InstanceCount": 1,
+                  "VolumeSizeInGB": 100
+                },
+                "StoppingCondition": {
+                  "MaxRuntimeInSeconds": 86400
+                },
+                "RoleArn": {"Fn::ImportValue": "mlops-${Environment}-execution-role"}
+              },
+              "Next": "RegisterModel",
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "NotifyFailure"
+              }]
+            },
+            "RegisterModel": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sagemaker:createModelPackage",
+              "Parameters": {
+                "ModelPackageGroupName": {"Fn::ImportValue": "mlops-${Environment}-model-group"},
+                "ModelApprovalStatus": "PendingManualApproval",
+                "InferenceSpecification": {
+                  "Containers": [{
+                    "Image": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/mlops-training:latest"
+                  }],
+                  "SupportedContentTypes": ["application/json"],
+                  "SupportedResponseMIMETypes": ["application/json"]
+                }
+              },
+              "Next": "NotifySuccess",
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "NotifyFailure"
+              }]
+            },
+            "NotifySuccess": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:mlops-${Environment}-model-approval",
+                "Message": "Retraining complete. New model version pending approval.",
+                "Subject": "MLOps Retraining Success"
+              },
+              "End": true
+            },
+            "NotifyFailure": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:mlops-${Environment}-model-approval",
+                "Message.$": "States.Format('Retraining failed: {}', $.Error)",
+                "Subject": "MLOps Retraining Failure"
+              },
+              "End": true
+            }
+          }
+        }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  StepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StepFunctionSageMaker
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateProcessingJob
+                  - sagemaker:DescribeProcessingJob
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:CreateModelPackage
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  Fn::ImportValue: !Sub mlops-${Environment}-execution-role
+              - Effect: Allow
+                Action:
+                  - events:PutTargets
+                  - events:PutRule
+                  - events:DescribeRule
+                Resource: '*'
+
+  ScheduledRetraining:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub mlops-${Environment}-scheduled-retrain
+      Description: Periodic model retraining trigger
+      ScheduleExpression: !Ref RetrainingSchedule
+      State: ENABLED
+      Targets:
+        - Arn: !Ref RetrainingStateMachine
+          Id: retrain
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+  DriftRetraining:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub mlops-${Environment}-drift-retrain
+      Description: Retrain on model quality drift detection
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type:
+          - SageMaker Model Monitor Quality Alert
+      State: ENABLED
+      Targets:
+        - Arn: !Ref RetrainingStateMachine
+          Id: drift-retrain
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartStateMachine
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref RetrainingStateMachine
+
+Outputs:
+  StateMachineArn:
+    Value: !Ref RetrainingStateMachine

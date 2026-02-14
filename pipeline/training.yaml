@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SageMaker training job configuration
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  TrainingInstanceType:
+    Type: String
+    Default: ml.m5.2xlarge
+  MaxRuntimeSeconds:
+    Type: Number
+    Default: 86400
+
+Resources:
+  TrainingJobDefinition:
+    Type: AWS::SageMaker::Pipeline
+    Properties:
+      PipelineName: !Sub mlops-${Environment}-training
+      PipelineDefinition:
+        PipelineDefinitionBody: !Sub |
+          {
+            "Version": "2020-12-01",
+            "Parameters": [
+              {"Name": "TrainingInstanceType", "Type": "String", "DefaultValue": "${TrainingInstanceType}"},
+              {"Name": "Epochs", "Type": "Integer", "DefaultValue": 50},
+              {"Name": "LearningRate", "Type": "Float", "DefaultValue": 0.001},
+              {"Name": "BatchSize", "Type": "Integer", "DefaultValue": 64}
+            ],
+            "Steps": [
+              {
+                "Name": "ModelTraining",
+                "Type": "Training",
+                "Arguments": {
+                  "AlgorithmSpecification": {
+                    "TrainingImage": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/mlops-training:latest",
+                    "TrainingInputMode": "File"
+                  },
+                  "HyperParameters": {
+                    "epochs": {"Get": "Parameters.Epochs"},
+                    "learning_rate": {"Get": "Parameters.LearningRate"},
+                    "batch_size": {"Get": "Parameters.BatchSize"}
+                  },
+                  "InputDataConfig": [
+                    {
+                      "ChannelName": "train",
+                      "DataSource": {
+                        "S3DataSource": {
+                          "S3Uri": "s3://mlops-${Environment}-data-${AWS::AccountId}/processed/train/",
+                          "S3DataType": "S3Prefix"
+                        }
+                      }
+                    },
+                    {
+                      "ChannelName": "validation",
+                      "DataSource": {
+                        "S3DataSource": {
+                          "S3Uri": "s3://mlops-${Environment}-data-${AWS::AccountId}/processed/validation/",
+                          "S3DataType": "S3Prefix"
+                        }
+                      }
+                    }
+                  ],
+                  "OutputDataConfig": {
+                    "S3OutputPath": "s3://mlops-${Environment}-models-${AWS::AccountId}/training-output/",
+                    "KmsKeyId": {"Fn::ImportValue": "mlops-${Environment}-kms-id"}
+                  },
+                  "ResourceConfig": {
+                    "InstanceType": {"Get": "Parameters.TrainingInstanceType"},
+                    "InstanceCount": 1,
+                    "VolumeSizeInGB": 100,
+                    "VolumeKmsKeyId": {"Fn::ImportValue": "mlops-${Environment}-kms-id"}
+                  },
+                  "StoppingCondition": {
+                    "MaxRuntimeInSeconds": ${MaxRuntimeSeconds}
+                  },
+                  "VpcConfig": {
+                    "SecurityGroupIds": [{"Fn::ImportValue": "mlops-${Environment}-sagemaker-sg"}],
+                    "Subnets": {"Fn::Split": [",", {"Fn::ImportValue": "mlops-${Environment}-private-subnets"}]}
+                  },
+                  "RoleArn": {"Fn::ImportValue": "mlops-${Environment}-execution-role"},
+                  "EnableNetworkIsolation": true
+                }
+              }
+            ]
+          }
+      RoleArn:
+        Fn::ImportValue: !Sub mlops-${Environment}-pipeline-role
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment

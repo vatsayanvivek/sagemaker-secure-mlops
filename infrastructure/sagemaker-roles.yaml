@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SageMaker execution roles with least-privilege access
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub mlops-${Environment}-sagemaker-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SageMakerS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::mlops-${Environment}-data-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::mlops-${Environment}-data-${AWS::AccountId}/*
+                  - !Sub arn:aws:s3:::mlops-${Environment}-models-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::mlops-${Environment}-models-${AWS::AccountId}/*
+        - PolicyName: SageMakerKMSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:CreateGrant
+                Resource:
+                  - Fn::ImportValue: !Sub mlops-${Environment}-kms-arn
+        - PolicyName: SageMakerCloudWatch
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+        - PolicyName: SageMakerVPC
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  PipelineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub mlops-${Environment}-pipeline-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateProcessingJob
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:CreateModel
+                  - sagemaker:CreateEndpointConfig
+                  - sagemaker:CreateEndpoint
+                  - sagemaker:UpdateEndpoint
+                  - sagemaker:DescribeProcessingJob
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:DescribeModel
+                  - sagemaker:DescribeEndpoint
+                  - sagemaker:CreateModelPackage
+                  - sagemaker:UpdateModelPackage
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt SageMakerExecutionRole.Arn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  SageMakerExecutionRoleArn:
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub mlops-${Environment}-execution-role
+  PipelineRoleArn:
+    Value: !GetAtt PipelineExecutionRole.Arn
+    Export:
+      Name: !Sub mlops-${Environment}-pipeline-role
